@@ -15,15 +15,7 @@ You need to have python set up on your local machine, along with the required li
 Since this is a tutorial on deploying ML algorithms, you need to have at least a rudimentary understanding of the machine learning model building process, model training, inference, saving models, and model evaluation. 
 
 #### 4: Docker: 
-Install Docker desktop, sign up, and learn how to create images and run docker containers. Creating Dockerized solutions or applications is a good practice anyway, in case you plan on deploying it on a Kubernetes cluster. For this tutorial, we will use Docker to create and run the model in the Sagemaker console. 
-
-#### 5: 
-
-
-
-
-
-
+Install Docker desktop, sign up, and learn how to create images and run docker containers. Creating Dockerized solutions or applications is a good practice anyway, in case you plan on deploying it on a Kubernetes cluster.. For this tutorial, we will use Docker to create and run the model in the Sagemaker console. 
 
 
 ## Configure AWS:
@@ -56,9 +48,66 @@ This will prompt you to supply the access key, secret access key, region, and ou
 
 S3 (Amazon Simple Storage Service) is a cloud based object storage service, that can be used to store any kind of data (CSVs, images, etc). In our use, we will use S3 to store our model, after exporting it from our local environment using the save model command. 
 
+### Create a policy:
+In order to create an s3 bucket, you need to create a policy and assign that policy to your user. Open your text editor, and copy and paste this bit of information:
 
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "AllowS3BucketCreation",
+            "Effect": "Allow",
+            "Action": [
+                "s3:CreateBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::*"
+            ]
+        }
+    ]
+}
+```
+This policy allows the user to create an S3 bucket. 
 
+Next, go to the IAM console, click on policies on the left navigation bar, click on create policy, then click on JSON, paste the text created above, and click on next. In this window, add the name (required) and description (optional), and click on create policy. 
 
+Repeat this step for the following text, and add it to a new policy:
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject"
+            ],
+            "Resource": "arn:aws:s3:::mkmltestbucket/*"
+        }
+    ]
+}
+```
+This policy allows the user to store objects in the S3 bucket after its creation. 
+
+### Assign Policy to User:
+
+To assign the created policies to the user, go to the IAM console, click on users, select your user, click on "Add permissions". A dropdown will appear, from that menu, select "add permissions". In the new window, you will see three options: "add user to group", "copy permissions", "attach policies directly". In this case, we will use the third option "attach policies directly". A number of policies will now appear on the bottom, you need to search the following policies and attach those to your user:
+
+1: The create s3 bucket policy created in the previous step.
+2: The put object in s3 bucket policy created in the previous step.
+3: AmazonEC2ContainerRegistryFullAccess
+
+## Create S3 Bucket:
+
+Once the user has the required permissions, you need to create the S3 bucket that will store your model. 
+
+Run this command in the CLI:
+
+```
+aws s3 mb s3://mltestbucket --region us-east-1
+```
+Your bucket name can be anything, barring some exceptions. You can check the [documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html) here. 
 
 
 
@@ -69,6 +118,12 @@ Step 1: Hopefully you have added docker to path by now. Use the code below to au
 ```
 aws ecr get-login-password --region <your-region> | docker login --username AWS --password-stdin <your-account-id>.dkr.ecr.<your-region>.amazonaws.com
 ```
+
+
+
+
+
+
 
 
 
