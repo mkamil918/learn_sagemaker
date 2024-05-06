@@ -332,7 +332,15 @@ sagemaker_client.create_endpoint(
 
 ```
 
+## Making inference requests on the model:
 
+Now, you can start making inference requests, or "testing" the model against real world data. 
+
+Run the following python code:
+
+```
+
+```
 
 
 
