@@ -15,7 +15,13 @@ You need to have python set up on your local machine, along with the required li
 Since this is a tutorial on deploying ML algorithms, you need to have at least a rudimentary understanding of the machine learning model building process, model training, inference, saving models, and model evaluation. 
 
 #### 4: Docker: 
-Install Docker desktop, sign up, and learn how to create images and run docker containers. Creating Dockerized solutions or applications is a good practice anyway, in case you plan on deploying it on a Kubernetes cluster.. For this tutorial, we will use Docker to create and run the model in the Sagemaker console. 
+Install Docker desktop, sign up, and learn how to create images and run docker containers. Creating Dockerized solutions or applications is a good practice anyway, in case you plan on deploying it on a Kubernetes cluster. For this tutorial, we will use Docker to create and run the model in the Sagemaker console.
+
+#### 5: WSL (Windows Subsystem for Linux):
+
+You need this to run Docker, but the Docker setup usually takes care of this for you. In case Docker does not install this automatically, check out the link [here](https://learn.microsoft.com/en-us/windows/wsl/install).
+
+WSL is also useful in case you want to run Linux VMs on your machine, but for that you need to install Ubuntu as well, but that is outside the scope of this tutorial. 
 
 
 ## Configure AWS:
@@ -110,14 +116,226 @@ aws s3 mb s3://mltestbucket --region us-east-1
 Your bucket name can be anything, barring some exceptions. You can check the [documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html) here. 
 
 
+## Create ECR Repo
+
+Go to the ECR console [here](https://console.aws.amazon.com/ecr/)
+
+Click on create repository, then add your respository name, and click on create. This repo will be used to store the docker image for the inference.py script. 
+
 
 ## Docker commands for ECR
 
 Step 1: Hopefully you have added docker to path by now. Use the code below to authenticate docker with your ECR registry. The <your-region> parameter is determined when you do aws configure in the CLI, and <your-account-id> can be obtained by clicking on your username in the top right of the AWS homepage. 
 
+You need to make sure to get the correct region; you can check it from the ECR repositories page, under URI. 
 ```
 aws ecr get-login-password --region <your-region> | docker login --username AWS --password-stdin <your-account-id>.dkr.ecr.<your-region>.amazonaws.com
 ```
+
+
+## Train Model
+
+Next, we train our model in python on our local machine using tensorflow. Below is the code to train the model. 
+
+```
+import tensorflow as tf
+
+# Generate some example data
+X_train = tf.random.normal(shape=(1000, 10))
+y_train = tf.random.normal(shape=(1000, 1))
+
+# Define a simple sequential model
+model = tf.keras.Sequential([
+    tf.keras.layers.Dense(64, activation='relu', input_shape=(10,)),
+    tf.keras.layers.Dense(64, activation='relu'),
+    tf.keras.layers.Dense(1)
+])
+
+# Compile the model
+model.compile(optimizer='adam',
+              loss='mean_squared_error',
+              metrics=['mean_squared_error'])
+
+# Train the model
+model.fit(X_train, y_train, epochs=10, batch_size=32)
+
+# Save the model
+tf.keras.models.save_model(model, 'saved_model.keras')
+```
+You can access the script for the model training in the model_training folder.
+
+After the model training has completed, run the following command in the CLI to push the saved model to the s3 bucket. 
+
+```
+aws s3 cp saved_model.keras s3://<your-bucket-name>/saved_model.keras
+```
+
+Next, create a script called inference.py with the following content:
+
+```
+import os
+import json
+import tensorflow as tf
+
+# Define the model file name
+MODEL_FILE = 'saved_model.keras'
+
+# Define the model_fn function to load the model
+def model_fn(model_dir):
+    """
+    Load the TensorFlow/Keras model.
+    
+    Parameters:
+    - model_dir: Path to the directory containing the model artifacts
+    
+    Returns:
+    - model: Loaded TensorFlow/Keras model
+    """
+    model_path = os.path.join(model_dir, MODEL_FILE)
+    model = tf.keras.models.load_model(model_path)  # Load the model from the specified path
+    return model
+
+# Define the predict_fn function to handle input data and generate predictions
+def predict_fn(input_data, model):
+    """
+    Generate predictions from the input data using the loaded model.
+    
+    Parameters:
+    - input_data: Input data for prediction
+    - model: Loaded TensorFlow/Keras model
+    
+    Returns:
+    - predictions: Predicted output
+    """
+    # Perform inference
+    predictions = model.predict(input_data)
+    
+    return predictions.tolist()  # Convert the predictions array to a list
+```
+
+Next, you need to containerize the inference.py script.
+
+
+## Push inference.py to the ECR using Docker
+
+Create a text file called dockerfile with no extension. Put the following content in it:
+
+```
+FROM tensorflow/tensorflow:latest
+
+COPY inference.py inference.py
+
+ENV SAGEMAKER_PROGRAM inference.py
+
+ENTRYPOINT ["python", "inference.py"]
+```
+
+Next, run the following command in the terminal to build the docker image.
+
+```
+docker build -t <your-image-name> .
+```
+
+Next, you need to tag the Docker Image with the Amazon ECR registry path. Run the following command:
+```
+docker tag <your-image-name> <account_id>.dkr.ecr.<your-region>.amazonaws.com/<your-ecr-repo>:<tag>
+```
+
+Finally, use the docker push command to push the image to the ECR repo. 
+
+```
+docker push <your-account-id>.dkr.ecr.<your-region>.amazonaws.com/<your-ecr-repo>:<tag>
+```
+
+## Create role in Sagemaker:
+
+The next step is to create the model in Sagemaker using the docker image we just pushed into ECR. For this, go into the IAM console, select roles, and create a new role. Under the Trusted entity type tab, select AWS service, and in usecase, select Sagemaker, and click on next on the bottom. You will see a tab called Permission policies, and under policy name you will see AmazonSageMakerFullAccess; click on next, assign a name to this role, and click on create role. I used aws-sagemaker-role, but you can use anything you like. 
+
+## Give S3 permissions to Sagemaker role:
+
+If you recall, the model was stored in S3, so we need to give the Sagemaker role full access to S3 as well. 
+
+Open the IAM console, click on roles, select the role you created previously, click on add permissions, then go to attach policies, and look for AmazonS3FullAccess, and give this policy to the created role. 
+
+## Create a SageMaker Model
+
+In the SageMaker console or using the AWS SDK, you'll create a SageMaker Model. This involves specifying the container image in ECR, IAM roles, and other configurations. Run the following code in python:
+
+```
+import boto3
+
+# Initialize SageMaker client
+sagemaker_client = boto3.client('sagemaker')
+
+# Specify the location of your container in ECR
+container = {
+    'Image': '<your-account-id>.dkr.ecr.<your-region>.amazonaws.com/<your-ECR-repo>:<image-tag>',
+
+    'ModelDataUrl': 's3://<your-bucket-name>/saved_model.keras',  
+    'Environment': {
+        'key': 'value'  # Optional environment variables for your container
+    }
+}
+
+# Specify the IAM role ARN
+execution_role_arn = 'arn:aws:iam::<account_id>:role/<role_name>'
+
+# Create the SageMaker Model
+sagemaker_client.create_model(
+    ModelName='modeltest',  # Name for your SageMaker Model
+    ExecutionRoleArn=execution_role_arn,  # IAM role ARN
+    PrimaryContainer=container  # Container configuration
+)
+```
+You should see the following responses if the code is executed correctly:
+
+
+ModelArn: This is the Amazon Resource Name (ARN) of the SageMaker Model that was created. The ARN uniquely identifies the model within AWS. You can use this ARN to reference the model in other AWS services or API calls.
+
+ResponseMetadata: This section provides metadata about the API response:
+
+    RequestId: A unique identifier for the request. This can be helpful for troubleshooting or tracking purposes.
+    
+    HTTPStatusCode: The HTTP status code of the response. A status code of 200 indicates that the request was successful.
+    
+    HTTPHeaders: Additional information about the HTTP response, including the content type, content length, and date.
+    
+    RetryAttempts: The number of retry attempts made by the AWS SDK.
+ 
+## Deploy Model to Endpoint:
+
+To deploy a SageMaker model to an endpoint using the AWS SDK, you can use the create_endpoint method provided by the SageMaker client. Run the following code in python.
+
+```
+endpoint_config_name = 'newendptcfg'  # Specify the endpoint configuration name
+model_name = 'modeltest'  # Specify the model name
+instance_type = 'ml.m4.xlarge'  # Specify the instance type
+initial_instance_count = 1  # Specify the initial instance count
+
+# Create endpoint configuration
+sagemaker_client.create_endpoint_config(
+    EndpointConfigName=endpoint_config_name,
+    ProductionVariants=[{
+        'InstanceType': instance_type,
+        'InitialInstanceCount': initial_instance_count,
+        'ModelName': model_name,
+        'VariantName': 'AllTraffic'
+    }]
+)
+
+# Create endpoint
+endpoint_name = 'mlendpointnew'  # Specify the endpoint name
+sagemaker_client.create_endpoint(
+    EndpointName=endpoint_name,
+    EndpointConfigName=endpoint_config_name
+)
+
+```
+
+
+
+
+
 
 
 
